@@ -1,0 +1,36 @@
+version: '3'
+
+services:
+  server:
+    build:
+      context: .
+    networks:
+      - webapp
+    env_file:
+      - .env
+    restart: always
+    container_name: usuprintcl
+    hostname: usuprintcl
+    volumes:
+      - .:/app
+
+  nginx:
+    build:
+      context: ./nginx
+    networks:
+      - webapp
+    ports:
+      - 10623:80
+    depends_on:
+      - server
+    restart: always
+    container_name: usuprintcl-proxy
+    volumes:
+      - ./nginx/static:/usr/share/nginx/html
+
+volumes:
+  static:
+
+networks:
+  webapp:
+    driver: bridge
