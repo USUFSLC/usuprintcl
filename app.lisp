@@ -2,13 +2,16 @@
   (:use :cl)
   (:import-from :lack.middleware.session.state.cookie
    :make-cookie-state)
-  (:export #:start #:stop))
+  (:import-from :lack.middleware.session.store.redis
+   :make-redis-store)
+  (:export #:start
+           #:stop))
 (in-package :usuprintcl.app)
 
 ;; Globals
 ;; I swear I have a license https://regexlicensing.org/
-(defparameter *A-NUMBER-REGEX* "^A[0-9]{8}$")
-
+(defvar *A-NUMBER-REGEX* "^A[0-9]{8}$")
+(defvar *REDIS-HOST* (uiop:getenv "REDIS_HOST"))
 (defvar *key*
   (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
 (defvar *SENDGRID-API-KEY* (uiop:getenv "SENDGRID_API_KEY"))
@@ -43,11 +46,6 @@
                            ("Two Sided (Portrait)" . "two-sided-long-edge")
                            ("Two Sided (Landscape)" . "two-sided-short-edge")))))
 
-(defvar *DEFAULT-CUPS-OPTIONS* '((media . "a4")
-                                 (number-up . "1")
-                                 (orientation-request . "No Orientation")
-                                 (sides . "One Sided")))
-
 ;; Conditions
 (define-condition invalid-anumber (error)
   ())
@@ -55,6 +53,32 @@
   ())
 (define-condition invalid-bft (error)
   ())
+
+;; Templates
+(defun job-form ()
+  (cl-markup:html5
+   (:form :method "post"
+          :enctype "multipart/form-data"
+          (:input :type "text"
+                  :name "title")
+          (:input :type "file"
+                  :name "payload")
+          (:select :name "color"
+                   (:option :value "monochrome"
+                            "Black and White")
+                   (:option :value "color"
+                            "Color"))
+          (loop for options in *CUPS-OPTIONS*
+                collect
+                (let ((option (car options))
+                      (option-selections (mapcar #'car (cdr options))))
+                  (cl-markup:markup (:select :name (string-downcase (string option))
+                                             (loop for val in option-selections
+                                                   collect
+                                                   (cl-markup:markup*
+                                                    `(:option :name ,val
+                                                              ,val)))))))
+	        (:input :type "submit"))))
 
 ;; Signatures
 
@@ -92,22 +116,18 @@
     (format nil "lpd://~a@~a/~a"
             lowered-anumber
             host
-            (assoc color *COLOR-PATH* :test #'string))))
+            (cdr (assoc color *COLOR-PATH* :test #'string=)))))
 
-(defun make-cups-print-command (printer-uri title options-alist filename)
+(defun make-cups-print-command (printer-uri filename &key title options-alist)
   (let ((o-options (reduce
-                    (lambda (option-val options)
+                    (lambda (options option-val)
                       (let* ((option (car option-val))
-                             (val (assoc
-                                   (assoc *CUPS-OPTIONS* option) (cdr option-val)
-                                   :test #'string=)))
+                             (val (cdr (assoc (cdr option-val) (cdr (assoc option *CUPS-OPTIONS*)) :test #'string=))))
                         (if (> (length val) 0)
                             (string-downcase
-                             (concatenate 'string
-                                          options
-                                          (format nil " -o ~a=~a" option val)))
-                            options)
-                        options-alist)))))
+                             (format nil "~a -o ~a=~a" options option val))
+                            options)))
+                    options-alist :initial-value "")))
     (format nil "/usr/bin/lp -h \"~a\" -T \"~a\" ~a ~a"
             printer-uri
             title
@@ -143,7 +163,6 @@
                                    *FROM-EMAIL*
                                    aggiemail
                                    body)))
-    
     (drakma:http-request *SENDGRID-SEND-PATH*
                          :method :post
                          :content sendgrid-req-body
@@ -153,16 +172,13 @@
 (defun request-token (env)
   (let* ((params (getf env :query-parameters))
          (anumber (cdr (assoc "anumber" params :test #'string=))))
-
     (cond
       ((valid-anumber anumber)
        (send-token-to-aggie anumber (sign-a-number anumber))
-
        (list 200 '(:content-type "text/plain")
              (list (format nil "An email will soon be sent to ~a, please follow its instructions." anumber))))
       (t
        `(400 (:content-type "text/plain") ("Invalid anumber"))))))
-
 
 (defun set-session-from-token (env)
   (let* ((params (getf env :query-parameters))
@@ -177,31 +193,6 @@
       (t
        '(401 (:content-type "text/plain")
          ("Invalid or expired token"))))))
-
-(defun job-form ()
-  (cl-markup:html5
-   (:form :method "post"
-          :enctype "multipart/form-data"
-          (:input :type "text"
-                  :name "title")
-          (:input :type "file"
-                  :name "payload")
-          (:select :name "color"
-                   (:option :value "monochrome"
-                            "Black and White")
-                   (:option :value "color"
-                            "Color"))
-          (loop for options in *CUPS-OPTIONS*
-                collect
-                (let ((option (car options))
-                      (option-selections (mapcar #'car (cdr options))))
-                  (cl-markup:markup (:select :name option
-                                             (loop for val in option-selections
-                                                   collect
-                                                   (cl-markup:markup*
-                                                    `(:option :name ,val
-                                                              ,val)))))))
-	        (:input :type "submit"))))
 
 (defun copy-binary-stream-to-file (stream path)
   (with-open-file (filestream path
@@ -218,22 +209,41 @@
            (list (job-form))))
     (:post
      (let* ((params (getf env :body-parameters))
-            (stream (cadr (assoc "payload" params :test #'string=)))
+            (session (getf env :lack.session))
+            (anumber (gethash :anumber session))
+            (file-stream (cadr (assoc "payload" params :test #'string=)))
+            (color (cdr (assoc "color" params :test #'string=)))
+            (title (cdr (assoc "title" params :test #'string=)))
             (path (make-unique-pdf)))
        (copy-binary-stream-to-file
-        (flexi-streams:make-flexi-stream stream
+        (flexi-streams:make-flexi-stream file-stream
                                          :external-format :utf-8)
         path)
        (when (and
-		          (typep stream 'file-stream)
-		          (probe-file stream))
-	       (delete-file stream))
-       (list 200 nil (list path))))))
+		          (typep file-stream 'file-stream)
+		          (probe-file file-stream))
+	       (delete-file file-stream))
+       (list 200 '(:content-type "text/plain")
+             (list
+              (make-cups-print-command
+               (make-printer-uri anumber :color color)
+               path
+               :title title
+               :options-alist (mapcar
+                (lambda (option)
+                  (cons
+                   option
+                   (cdr (assoc (string-downcase (string option))
+                               params :test #'string=))))
+                (mapcar #'car *CUPS-OPTIONS*)))))))))
 
 ;; And... GO!
 (setf *app*
       (lack:builder
        `(:session
+         :store
+         ,(make-redis-store :namespace "session"
+                            :host *REDIS-HOST*)
          :state
          ,(make-cookie-state
            :httponly t

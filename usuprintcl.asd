@@ -4,8 +4,9 @@
   :license "MIT"
   :depends-on (:clack
                :lack
-               :alexandria
                :lack-middleware-session
+               :lack-session-store-redis
+
                :cl-ppcre
                :clack-handler-hunchentoot
                :jose
