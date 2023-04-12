@@ -1,46 +1,52 @@
 (defpackage usuprintcl.app
   (:use :cl)
   (:import-from :lack.middleware.session.state.cookie
-                :make-cookie-state)
+   :make-cookie-state)
   (:export #:start #:stop))
 (in-package :usuprintcl.app)
 
 ;; Globals
 ;; I swear I have a license https://regexlicensing.org/
-(defparameter *BFT-REGEX* "^https:\/\/bft.usu.edu\/[a-zA-Z0-9]+$")
 (defparameter *A-NUMBER-REGEX* "^A[0-9]{8}$")
 
-(defparameter *JWT_VALIDATE_ANUMBER_EXPR_SEC* (* 60 60 3)) ;; 3 hours
-(defparameter *COOKIE_EXPIRE_SEC* (* 60 60 24))
+(defvar *key*
+  (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
+(defvar *SENDGRID-API-KEY* (uiop:getenv "SENDGRID_API_KEY"))
+(defvar *JWT-VALIDATE-ANUMBER-EXPIRE* (* 60 60 3)) ;; 3 hours
+(defvar *COOKIE-EXPIRE-SEC* (* 60 60 24)) ;; A day
 
-(defparameter *CUPS-HOST* "vmpps4.aggies.usu.edu")
-(defparameter *COLOR-PATH* '(("monochrome" . "Campus-BW")
-                             ("color" . "Campus-Color")))
-(defparameter *CUPS-OPTIONS* '((media .
-                                (("a4" . "a4")
-                                 ("letter" . "letter")
-                                 ("legal" . "legal")))
-                               (number-up .
-                                (("1" . "")
-                                 ("2" . "2")
-                                 ("4" . "4")
-                                 ("6" . "6")
-                                 ("9" . "9")
-                                 ("16" . "16")))
-                               (orientation-requested .
-                                (("No Orientation" . "")
-                                 ("90 Deg. Counter Clockwise" . "4")
-                                 ("90 Deg. Clockwise" . "5")
-                                 ("180 Deg." . "6")))
-                               (sides .
-                                (("One Sided" . "one-sided")
-                                 ("Two Sided (Portrait)" . "two-sided-long-edge")
-                                 ("Two Sided (Landscape)" . "two-sided-short-edge")))))
+(defvar *FROM-EMAIL* (uiop:getenv "FROM_EMAIL"))
+(defvar *PRINT-SERVER-HOST* (uiop:getenv "HOST"))
+(defvar *SUBJECT-LINE* "FSLC Print Job Authentication")
+(defvar *SENDGRID-SEND-PATH* "https://api.sendgrid.com/v3/mail/send")
+(defvar *CUPS-HOST* "vmpps4.aggies.usu.edu")
+(defvar *COLOR-PATH* '(("monochrome" . "Campus-BW")
+                       ("color" . "Campus-Color")))
+(defvar *CUPS-OPTIONS* '((media .
+                          (("a4" . "a4")
+                           ("letter" . "letter")
+                           ("legal" . "legal")))
+                         (number-up .
+                          (("1" . "")
+                           ("2" . "2")
+                           ("4" . "4")
+                           ("6" . "6")
+                           ("9" . "9")
+                           ("16" . "16")))
+                         (orientation-requested .
+                          (("No Orientation" . "")
+                           ("90 Deg. Counter Clockwise" . "4")
+                           ("90 Deg. Clockwise" . "5")
+                           ("180 Deg." . "6")))
+                         (sides .
+                          (("One Sided" . "one-sided")
+                           ("Two Sided (Portrait)" . "two-sided-long-edge")
+                           ("Two Sided (Landscape)" . "two-sided-short-edge")))))
 
-(defparameter *DEFAULT-CUPS-OPTIONS* '((media . "a4")
-                                       (number-up . "1")
-                                       (orientation-request . "No Orientation")
-                                       (sides . "One Sided")))
+(defvar *DEFAULT-CUPS-OPTIONS* '((media . "a4")
+                                 (number-up . "1")
+                                 (orientation-request . "No Orientation")
+                                 (sides . "One Sided")))
 
 ;; Conditions
 (define-condition invalid-anumber (error)
@@ -51,41 +57,34 @@
   ())
 
 ;; Signatures
-(defvar *key*
-  (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
+
+(defun valid-anumber (anumber)
+  (cl-ppcre:all-matches *A-NUMBER-REGEX* anumber))
 
 (defun validate-anumber-or-throw (anumber)
-  (or (cl-ppcre:all-matches *A-NUMBER-REGEX* anumber)
+  (or (valid-anumber anumber)
       (error 'invalid-anumber)))
 
 (defun sign-a-number (anumber &optional
-                                (exp_sec *JWT_VALIDATE_ANUMBER_EXPR_SEC*))
+                                (exp_sec *JWT-VALIDATE-ANUMBER-EXPIRE*))
   (validate-anumber-or-throw anumber)
-  (jose:encode :hs256 *key*`(("anumber" .  anumber)
-                             ("exp" . ,(+ (get-universal-time)
-                                          exp_sec)))))
+  (jose:encode :hs256 *key*
+               `(("anumber" . ,anumber)
+                 ("exp" . ,(+ (get-universal-time)
+                              exp_sec)))))
 
 (defun valid-token-p-get-anumber (token)
   (let* ((decoded (jose:decode :hs256 *key* token))
          (expiration (cdr (assoc "exp" decoded :test #'string=)))
          (anumber (cdr (assoc "anumber" decoded :test #'string=))))
-    (if (< (get-universal-time) (expiration))
+    (if (< (get-universal-time) expiration)
         anumber
         (error 'jwt-expiration))))
 
-;; Big File Transfer
+;; CUPS
+
 (defun make-unique-pdf ()
   (format nil "/tmp/~a-~a.pdf" (get-universal-time) (random (expt 10 10))))
-
-(defun validate-bft-or-throw (bft)
-  (or (cl-ppcre:all-matches *BFT-REGEX* bft)
-      (error 'invalid-bft)))
-
-(defun save-bft (bft)
-  (validate-bft-or-throw bft)
-  (let ((pdf-path (make-unique-pdf)))
-    (uiop:run-program "/usr/bin/wget ~a -O ~a" bft pdf-path)
-    pdf-path))
 
 (defun make-printer-uri (anumber &key (host *CUPS-HOST*) (color "monochrome"))
   (validate-anumber-or-throw anumber)
@@ -117,15 +116,64 @@
 
 ;; Sendgrid
 
-(defun set-session-from-token (env)
-  (let* ((params (getf env :body-parameters))
-         (token (cdr (assoc params "token" :test #'string=)))
-         (session (getf env :lack.session)))
+(defun make-sendgrid-email (subject from to msg)
+  (cl-json:encode-json-to-string
+   `(("from" . (("email" . ,from)))
+     ("content" .
+                ((("type" . "text/html")
+                  ("value" . ,msg))))
+     ("personalizations" . 
+
+                         ((("subject" . ,subject)
+                           ("to" .
+                                 ((("email" . ,to))))))))))
+
+(defun send-token-to-aggie (anumber token)
+  (validate-anumber-or-throw anumber)
+  (let* ((aggiemail (format nil "~a@usu.edu" anumber))
+         (token-link (format nil "~a/auth?token=~a"
+                             *PRINT-SERVER-HOST*
+                             token))
+         (body (format nil "Hello! Looks like you (~a) have submitted a print job to the FSLC print server. Please verify your identity using the following link: <a href=\"~a\">~a</a>"
+                       anumber
+                       token-link
+                       token-link))
+         (sendgrid-req-body (make-sendgrid-email
+                                   *SUBJECT-LINE*
+                                   *FROM-EMAIL*
+                                   aggiemail
+                                   body)))
+    
+    (drakma:http-request *SENDGRID-SEND-PATH*
+                         :method :post
+                         :content sendgrid-req-body
+                         :additional-headers `(("Content-Type" . "application/json")
+                                               ("Authorization" . ,(concatenate 'string "Bearer " *SENDGRID-API-KEY*))))))
+
+(defun request-token (env)
+  (let* ((params (getf env :query-parameters))
+         (anumber (cdr (assoc "anumber" params :test #'string=))))
+
     (cond
-      ((valid-token-p-get-anumber token)
-       (setf (gethash :anumber session) token)
-       '(200 (:content-type "text/plain")
-         ("Dear Bob, you welcome!")))
+      ((valid-anumber anumber)
+       (send-token-to-aggie anumber (sign-a-number anumber))
+
+       (list 200 '(:content-type "text/plain")
+             (list (format nil "An email will soon be sent to ~a, please follow its instructions." anumber))))
+      (t
+       `(400 (:content-type "text/plain") ("Invalid anumber"))))))
+
+
+(defun set-session-from-token (env)
+  (let* ((params (getf env :query-parameters))
+         (token (cdr (assoc "token" params :test #'string=)))
+         (session (getf env :lack.session))
+         (maybe-anumber (valid-token-p-get-anumber token)))
+    (cond
+      (maybe-anumber
+       (setf (gethash :anumber session) maybe-anumber)
+       (list 200 '(:content-type "text/plain")
+             (list (concatenate 'string "Thank you, " maybe-anumber))))
       (t
        '(401 (:content-type "text/plain")
          ("Invalid or expired token"))))))
@@ -138,40 +186,40 @@
                   :name "title")
           (:input :type "file"
                   :name "payload")
-;;          (:select :name "color"
-;;                   (:option :value "monochrome"
-;;                            "Black and White")
-;;                   (:option :value "color"
-;;                            "Color"))
+          (:select :name "color"
+                   (:option :value "monochrome"
+                            "Black and White")
+                   (:option :value "color"
+                            "Color"))
           (loop for options in *CUPS-OPTIONS*
                 collect
                 (let ((option (car options))
                       (option-selections (mapcar #'car (cdr options))))
                   (cl-markup:markup (:select :name option
-                                   (loop for val in option-selections
-                                         collect
-                                         (cl-markup:markup*
-                                          `(:option :name ,val
-                                                    ,val)))))))
+                                             (loop for val in option-selections
+                                                   collect
+                                                   (cl-markup:markup*
+                                                    `(:option :name ,val
+                                                              ,val)))))))
 	        (:input :type "submit"))))
 
 (defun copy-binary-stream-to-file (stream path)
-  (with-open-file (outstream path
-                             :direction :output
-                             :element-type '(unsigned-byte 8))
+  (with-open-file (filestream path
+                              :direction :output
+                              :element-type '(unsigned-byte 8))
     (loop for byte = (read-byte stream nil)
           while byte
-          do (write-byte byte outstream))))
+          do (write-byte byte filestream))))
 
 (defun print-job (env)
   (case (getf env :request-method)
     (:get
-     (list 200 nil (list (job-form))))
+     (list 200 '(:content-type "text/html")
+           (list (job-form))))
     (:post
      (let* ((params (getf env :body-parameters))
-            (stream (cdr (assoc "payload" params :test #'string=)))
+            (stream (cadr (assoc "payload" params :test #'string=)))
             (path (make-unique-pdf)))
-       (format t "~a" stream)
        (copy-binary-stream-to-file
         (flexi-streams:make-flexi-stream stream
                                          :external-format :utf-8)
@@ -179,10 +227,8 @@
        (when (and
 		          (typep stream 'file-stream)
 		          (probe-file stream))
-         (delete-file stream))
-       (list 200 nil (list "Hello"))))))
-
-
+	       (delete-file stream))
+       (list 200 nil (list path))))))
 
 ;; And... GO!
 (setf *app*
@@ -192,9 +238,10 @@
          ,(make-cookie-state
            :httponly t
            :secure t
-           :expires *COOKIE_EXPIRE_SEC*))
+           :expires *COOKIE-EXPIRE-SEC*))
        (:mount "/print" 'print-job)
-       (:mount "/token" 'set-session-from-token)
+       (:mount "/token" 'request-token)
+       (:mount "/auth" 'set-session-from-token)
        (lambda (env)
          `(200
            (:content-type "text/plain")
