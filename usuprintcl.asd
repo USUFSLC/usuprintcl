@@ -10,6 +10,6 @@
                :clack-handler-hunchentoot
                :jose
                :drakma
-               :cl-who
+               :cl-markup
                :cl-json)
   :components ((:file "app")))

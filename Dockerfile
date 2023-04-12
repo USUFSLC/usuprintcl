@@ -1,6 +1,6 @@
 FROM alpine:latest as APPLICATION
 
-RUN apk add sbcl libev gcc libc6-compat bash
+RUN apk add sbcl bash
 RUN apk add inotify-tools bash wget
 RUN apk add cups cups-libs cups-client cups-filters
 

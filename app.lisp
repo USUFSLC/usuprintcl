@@ -14,29 +14,32 @@
 (defparameter *COOKIE_EXPIRE_SEC* (* 60 60 24))
 
 (defparameter *CUPS-HOST* "vmpps4.aggies.usu.edu")
-(defparameter *COLOR-PATH* '((monochrome . "Campus-BW")
-                             (color . "Campus-Color")))
+(defparameter *COLOR-PATH* '(("monochrome" . "Campus-BW")
+                             ("color" . "Campus-Color")))
 (defparameter *CUPS-OPTIONS* '((media .
                                 (("a4" . "a4")
                                  ("letter" . "letter")
                                  ("legal" . "legal")))
                                (number-up .
-                                (("2" . "2")
+                                (("1" . "")
+                                 ("2" . "2")
                                  ("4" . "4")
                                  ("6" . "6")
                                  ("9" . "9")
                                  ("16" . "16")))
                                (orientation-requested .
-                                (("90 Deg. Counter Clockwise " . "4")
+                                (("No Orientation" . "")
+                                 ("90 Deg. Counter Clockwise" . "4")
                                  ("90 Deg. Clockwise" . "5")
                                  ("180 Deg." . "6")))
                                (sides .
                                 (("One Sided" . "one-sided")
                                  ("Two Sided (Portrait)" . "two-sided-long-edge")
                                  ("Two Sided (Landscape)" . "two-sided-short-edge")))))
+
 (defparameter *DEFAULT-CUPS-OPTIONS* '((media . "a4")
-                                       (number-up . nil)
-                                       (orientation-request . nil)
+                                       (number-up . "1")
+                                       (orientation-request . "No Orientation")
                                        (sides . "One Sided")))
 
 ;; Conditions
@@ -63,10 +66,9 @@
                                           exp_sec)))))
 
 (defun valid-token-p-get-anumber (token)
-  (let* ((decoded (jose:decode :hs256 *key*
-                               token))
-         (expiration (assoc "exp" decoded))
-         (anumber (assoc "anumber" decoded)))
+  (let* ((decoded (jose:decode :hs256 *key* token))
+         (expiration (cdr (assoc "exp" decoded :test #'string=)))
+         (anumber (cdr (assoc "anumber" decoded :test #'string=))))
     (if (< (get-universal-time) (expiration))
         anumber
         (error 'jwt-expiration))))
@@ -91,16 +93,16 @@
     (format nil "lpd://~a@~a/~a"
             lowered-anumber
             host
-            (assoc color *COLOR-PATH*))))
+            (assoc color *COLOR-PATH* :test #'string))))
 
 (defun make-cups-print-command (printer-uri title options-alist filename)
   (let ((o-options (reduce
                     (lambda (option-val options)
                       (let* ((option (car option-val))
                              (val (assoc
-                                   (assoc *CUPS-OPTIONS* option)
-                                   (cdr option-val))))
-                        (if val
+                                   (assoc *CUPS-OPTIONS* option) (cdr option-val)
+                                   :test #'string=)))
+                        (if (> (length val) 0)
                             (string-downcase
                              (concatenate 'string
                                           options
@@ -115,19 +117,10 @@
 
 ;; Sendgrid
 
-;; TODO: Put in email
-(defun request-token (env)
-  (validate-anumber-or-throw)
-  `(200 :content-type "text-plain"
-        (,(sign-a-number anumber))))
-
 (defun set-session-from-token (env)
   (let* ((params (getf env :body-parameters))
-         (token (alexandria:assoc-value
-                 params
-                 "token" :test #'string=))
-         (session (getf env
-                        :lack.session)))
+         (token (cdr (assoc params "token" :test #'string=)))
+         (session (getf env :lack.session)))
     (cond
       ((valid-token-p-get-anumber token)
        (setf (gethash :anumber session) token)
@@ -138,53 +131,57 @@
          ("Invalid or expired token"))))))
 
 (defun job-form ()
-  (cl-who:with-html-output-to-string (s)
-	  (:html
-	   (:body
-	    (:form :method "post"	           
-		         :enctype "multipart/form-data"
-             (:input :type "text"
-		                 :name "title")
-             (:select :name "color"
-                      (:option :value "monochrome"
-                               "Black and White")
-                      (:option :value "color"
-                               "Color"))
-             (mapcar
-              (lambda (options)
+  (cl-markup:html5
+   (:form :method "post"
+          :enctype "multipart/form-data"
+          (:input :type "text"
+                  :name "title")
+          (:input :type "file"
+                  :name "payload")
+;;          (:select :name "color"
+;;                   (:option :value "monochrome"
+;;                            "Black and White")
+;;                   (:option :value "color"
+;;                            "Color"))
+          (loop for options in *CUPS-OPTIONS*
+                collect
                 (let ((option (car options))
                       (option-selections (mapcar #'car (cdr options))))
-                  (htm
-                   (:select :name option
-                            (mapcar (lambda (val)
-                                      (html (:option :name val
-                                                     val)))
-                                    option-selections)))))
-              *CUPS-OPTIONS*)
-             (:input :type "file"
-		                 :name "payload")
-	           (:input :type "submit"))))))
+                  (cl-markup:markup (:select :name option
+                                   (loop for val in option-selections
+                                         collect
+                                         (cl-markup:markup*
+                                          `(:option :name ,val
+                                                    ,val)))))))
+	        (:input :type "submit"))))
+
+(defun copy-binary-stream-to-file (stream path)
+  (with-open-file (outstream path
+                             :direction :output
+                             :element-type '(unsigned-byte 8))
+    (loop for byte = (read-byte stream nil)
+          while byte
+          do (write-byte byte outstream))))
 
 (defun print-job (env)
   (case (getf env :request-method)
     (:get
-     `(200
-       nil
-       (,(job-form))))
+     (list 200 nil (list (job-form))))
     (:post
-     (let* ((req (lack.request:make-request env))
-            (body-params (lack.request:request-body-parameters req))) 
-       (print env)
-       (destructuring-bind (stream fname content-type)
-	         (cdr (assoc "payload" body-params :test #'equal))
-	       (when (and
-		            (typep stream 'file-stream)
-		            (probe-file stream))
-	         (delete-file stream))	; see https://github.com/fukamachi/smart-buffer/issues/1
-	       `(
-	         200
-	         nil
-	         (,(format nil "~S ~S ~S ~S~%" env stream fname content-type))))))))
+     (let* ((params (getf env :body-parameters))
+            (stream (cdr (assoc "payload" params :test #'string=)))
+            (path (make-unique-pdf)))
+       (format t "~a" stream)
+       (copy-binary-stream-to-file
+        (flexi-streams:make-flexi-stream stream
+                                         :external-format :utf-8)
+        path)
+       (when (and
+		          (typep stream 'file-stream)
+		          (probe-file stream))
+         (delete-file stream))
+       (list 200 nil (list "Hello"))))))
+
 
 
 ;; And... GO!
@@ -196,12 +193,12 @@
            :httponly t
            :secure t
            :expires *COOKIE_EXPIRE_SEC*))
+       (:mount "/print" 'print-job)
+       (:mount "/token" 'set-session-from-token)
        (lambda (env)
-         
-         (format t "~a" env)
-         '(200
+         `(200
            (:content-type "text/plain")
-           ("Hello, World")))))
+           ("Hello")))))
 
 (defun start ()
   (clack:clackup *app*
@@ -211,3 +208,4 @@
 ;; Stop
 (defun stop ()
   (clack:stop *app*))
+
