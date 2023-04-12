@@ -4,20 +4,28 @@ RUN apk add sbcl bash
 RUN apk add inotify-tools bash wget
 RUN apk add cups cups-libs cups-client cups-filters
 
-WORKDIR /app
-COPY . /app
+# Add user 
+RUN adduser -h /home/runner -D runner
+RUN addgroup runner lpadmin
 
-ADD https://beta.quicklisp.org/quicklisp.lisp /root/quicklisp.lisp
+RUN mkdir /home/runner/app
+COPY . /home/runner/app
+WORKDIR /home/runner
+RUN chown -R runner /home/runner
 
-# Install quicklisp
+USER runner
+
+RUN wget https://beta.quicklisp.org/quicklisp.lisp -O /home/runner/quicklisp.lisp
 RUN set -x; \
-  sbcl --load /root/quicklisp.lisp \
+  sbcl --load /home/runner/quicklisp.lisp \
     --eval '(quicklisp-quickstart:install)' \
     --quit && \
-  echo '#-quicklisp (load #P"/root/quicklisp/setup.lisp")' > /root/.sbclrc && \
-  rm /root/quicklisp.lisp
+  echo '#-quicklisp (load #P"/home/runner/quicklisp/setup.lisp")' > /home/runner/.sbclrc && \
+  rm /home/runner/quicklisp.lisp
+  
+WORKDIR /home/runner/app
 
-# Get deps
 RUN sbcl --load usuprintcl.asd --eval '(ql:quickload :usuprintcl)'
 
-CMD /etc/init.d/cupsd start ; bash watch.sh
+USER root
+CMD cupsd ; su runner -c "bash watch.sh"

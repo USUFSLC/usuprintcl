@@ -11,6 +11,11 @@ services:
       - cache:/data
 
   server:
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
     build:
       context: .
     networks:
@@ -23,7 +28,7 @@ services:
     container_name: usuprintcl
     hostname: usuprintcl
     volumes:
-      - .:/app
+      - .:/home/runner/app:ro
 
   nginx:
     build:

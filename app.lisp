@@ -60,10 +60,13 @@
    (:form :method "post"
           :enctype "multipart/form-data"
           (:input :type "text"
+                  :required t
                   :name "title")
           (:input :type "file"
+                  :required t
                   :name "payload")
           (:select :name "color"
+                   :required t
                    (:option :value "monochrome"
                             "Black and White")
                    (:option :value "color"
@@ -72,7 +75,8 @@
                 collect
                 (let ((option (car options))
                       (option-selections (mapcar #'car (cdr options))))
-                  (cl-markup:markup (:select :name (string-downcase (string option))
+                  (cl-markup:markup (:select :required t
+                                             :name (string-downcase (string option))
                                              (loop for val in option-selections
                                                    collect
                                                    (cl-markup:markup*
@@ -107,6 +111,9 @@
 
 ;; CUPS
 
+(defun make-unique-printer-name ()
+  (format nil "~a-~a" (get-universal-time) (random (expt 10 10))))
+
 (defun make-unique-pdf ()
   (format nil "/tmp/~a-~a.pdf" (get-universal-time) (random (expt 10 10))))
 
@@ -118,7 +125,15 @@
             host
             (cdr (assoc color *COLOR-PATH* :test #'string=)))))
 
-(defun make-cups-print-command (printer-uri filename &key title options-alist)
+(defun make-cups-create-printer-cmd (printer-name printer-uri)
+  (format nil "lpadmin -p \"~a\" -E -v \"~a\""
+          printer-name
+          printer-uri))
+
+(defun make-cups-delete-printer-command (printer-name)
+  (format nil "lpadmin -x \"~a\"" printer-name))
+
+(defun make-cups-print-command (printer-name filename &key title options-alist)
   (let ((o-options (reduce
                     (lambda (options option-val)
                       (let* ((option (car option-val))
@@ -128,8 +143,8 @@
                              (format nil "~a -o ~a=~a" options option val))
                             options)))
                     options-alist :initial-value "")))
-    (format nil "/usr/bin/lp -h \"~a\" -T \"~a\" ~a ~a"
-            printer-uri
+    (format nil "lp -d \"~a\" -T \"~a\" ~a ~a"
+            printer-name
             title
             o-options
             filename)))
@@ -176,7 +191,7 @@
       ((valid-anumber anumber)
        (send-token-to-aggie anumber (sign-a-number anumber))
        (list 200 '(:content-type "text/plain")
-             (list (format nil "An email will soon be sent to ~a, please follow its instructions." anumber))))
+             (list (format nil "An email will soon be sent to ~a, please follow its instructions to verify your session." anumber))))
       (t
        `(400 (:content-type "text/plain") ("Invalid anumber"))))))
 
@@ -202,7 +217,7 @@
           while byte
           do (write-byte byte filestream))))
 
-(defun print-job (env)
+(defun add-print-job (env)
   (case (getf env :request-method)
     (:get
      (list 200 '(:content-type "text/html")
@@ -214,7 +229,23 @@
             (file-stream (cadr (assoc "payload" params :test #'string=)))
             (color (cdr (assoc "color" params :test #'string=)))
             (title (cdr (assoc "title" params :test #'string=)))
-            (path (make-unique-pdf)))
+            (path (make-unique-pdf))
+            (printer-name (make-unique-printer-name))
+            (printer-uri (make-printer-uri anumber :color color))
+            (create-printer-cmd (make-cups-create-printer-cmd printer-name printer-uri))
+            (print-cmd (make-cups-print-command
+                        printer-name
+                        path
+                        :title title
+                        :options-alist (mapcar
+                                        (lambda (option)
+                                          (cons
+                                           option
+                                           (cdr (assoc (string-downcase (string option))
+                                                       params :test #'string=))))
+                                        (mapcar #'car *CUPS-OPTIONS*))))
+            (remove-printer-cmd (make-cups-delete-printer-command printer-name)))
+       
        (copy-binary-stream-to-file
         (flexi-streams:make-flexi-stream file-stream
                                          :external-format :utf-8)
@@ -223,19 +254,14 @@
 		          (typep file-stream 'file-stream)
 		          (probe-file file-stream))
 	       (delete-file file-stream))
+       
+       (uiop:run-program create-printer-cmd)
+       (uiop:run-program print-cmd)
+       (uiop:run-program remove-printer-cmd)
+
        (list 200 '(:content-type "text/plain")
-             (list
-              (make-cups-print-command
-               (make-printer-uri anumber :color color)
-               path
-               :title title
-               :options-alist (mapcar
-                (lambda (option)
-                  (cons
-                   option
-                   (cdr (assoc (string-downcase (string option))
-                               params :test #'string=))))
-                (mapcar #'car *CUPS-OPTIONS*)))))))))
+             (list "Print job was sent"))))))
+
 
 ;; And... GO!
 (setf *app*
@@ -249,7 +275,7 @@
            :httponly t
            :secure t
            :expires *COOKIE-EXPIRE-SEC*))
-       (:mount "/print" 'print-job)
+       (:mount "/print" 'add-print-job)
        (:mount "/token" 'request-token)
        (:mount "/auth" 'set-session-from-token)
        (lambda (env)
