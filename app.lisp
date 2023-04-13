@@ -49,10 +49,6 @@
 ;; Conditions
 (define-condition invalid-anumber (error)
   ())
-(define-condition jwt-expiration (error)
-  ())
-(define-condition invalid-bft (error)
-  ())
 
 ;; Templates
 (defun job-form ()
@@ -106,8 +102,7 @@
          (expiration (cdr (assoc "exp" decoded :test #'string=)))
          (anumber (cdr (assoc "anumber" decoded :test #'string=))))
     (if (< (get-universal-time) expiration)
-        anumber
-        (error 'jwt-expiration))))
+        anumber)))
 
 ;; CUPS
 
@@ -149,7 +144,7 @@
             o-options
             filename)))
 
-;; Sendgrid
+;; Sendgrid & Auth
 
 (defun make-sendgrid-email (subject from to msg)
   (cl-json:encode-json-to-string
@@ -209,6 +204,8 @@
        '(401 (:content-type "text/plain")
          ("Invalid or expired token"))))))
 
+;; Print
+
 (defun copy-binary-stream-to-file (stream path)
   (with-open-file (filestream path
                               :direction :output
@@ -262,7 +259,36 @@
        (list 200 '(:content-type "text/plain")
              (list "Print job was sent"))))))
 
+(defun root (env)
+  (list 200 '(:content-type "text/plain")
+             (list "Hello!")))
 
+(defvar *routes*
+  '(("^/print" . add-print-job)
+    ("^/token" . request-token)
+    ("^/auth" . set-session-from-token)
+    ("^/" . root)))
+
+(defvar *protected-route-regexs* '("^/print"))
+
+(defun route-req (env)
+  (let* ((uri (getf env :request-uri))
+         (route (find-if (lambda (route)
+                           (cl-ppcre:all-matches (car route) uri))
+                         *routes*))
+         (route-regex (car route))
+         (route-handler (cdr route))
+         (route-protected (some (lambda (regex)
+                                  (cl-ppcre:all-matches regex uri))
+                                *protected-route-regexs*))
+         (authenticated (gethash :anumber (getf env :lack.session))))
+    (if route-protected
+        (if authenticated
+            (funcall route-handler env)
+            (list 401 '(:content-type "text/plain")
+                  (list "Unauthorized")))
+        (funcall route-handler env))))
+ 
 ;; And... GO!
 (setf *app*
       (lack:builder
@@ -275,13 +301,7 @@
            :httponly t
            :secure t
            :expires *COOKIE-EXPIRE-SEC*))
-       (:mount "/print" 'add-print-job)
-       (:mount "/token" 'request-token)
-       (:mount "/auth" 'set-session-from-token)
-       (lambda (env)
-         `(200
-           (:content-type "text/plain")
-           ("Hello")))))
+       'route-req))
 
 (defun start ()
   (clack:clackup *app*
