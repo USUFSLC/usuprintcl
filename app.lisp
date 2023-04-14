@@ -10,14 +10,14 @@
 
 ;; Globals
 ;; I swear I have a license https://regexlicensing.org/
-(defvar *A-NUMBER-REGEX* "^A[0-9]{8}$")
+(defvar *A-NUMBER-REGEX* "^(A|a)[0-9]{8}$")
 (defvar *REDIS-HOST* (uiop:getenv "REDIS_HOST"))
 (defvar *key*
   (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
 (defvar *SENDGRID-API-KEY* (uiop:getenv "SENDGRID_API_KEY"))
 (defvar *JWT-VALIDATE-ANUMBER-EXPIRE* (* 60 60 3)) ;; 3 hours
 (defvar *COOKIE-EXPIRE-SEC* (* 60 60 24)) ;; A day
-
+(defvar *PPD-FILE* "generic-postscript.ppd")
 (defvar *FROM-EMAIL* (uiop:getenv "FROM_EMAIL"))
 (defvar *PRINT-SERVER-HOST* (uiop:getenv "HOST"))
 (defvar *SUBJECT-LINE* "FSLC Print Job Authentication")
@@ -46,6 +46,8 @@
                            ("Two Sided (Portrait)" . "two-sided-long-edge")
                            ("Two Sided (Landscape)" . "two-sided-short-edge")))))
 
+(defparameter *REMOVE-PRINTER-JOBS-NEXT-CRON* '())
+
 ;; Conditions
 (define-condition invalid-anumber (error)
   ())
@@ -53,6 +55,7 @@
 ;; Templates
 (defmacro render-env-with-root ((env) &body body)
   `(let* ((session (getf ,env :lack.session))
+          (authenticated (gethash :anumber session))
           (message (gethash :message session)))
      (remhash :message session)
      (cl-markup:html5
@@ -74,6 +77,9 @@
                (:div :class "headings"
                      (:h1 "usuprintcl")
                      (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
+               (:a :href "/logout"
+                         (if authenticated
+                             "Logout"))
                (:hr)
                (:div :class "message"
                      (if message
@@ -82,55 +88,65 @@
 
 (defun login-page (env)
   (render-env-with-root (env)
-    (:form :method "get"
-           :action "/token"
-           (:label :for "anumber"
-                   "A-Number")
-           (:input :name "anumber"
-                   :placeholder "A01234567"
-                   :type "text")
-           (:input :type "submit"))))
+                        (:form :method "get"
+                               :action "/token"
+                               (:label :for "anumber"
+                                       "A-Number")
+                               (:input :name "anumber"
+                                       :placeholder "A01234567"
+                                       :type "text")
+                               (:input :type "submit"))))
+
+(defun four-oh-four (env)
+  (render-env-with-root (env)
+                        (:p "404 - Not found")))
 
 (defun job-form (env)
   (render-env-with-root (env)
-   (:form :method "post"
-          :enctype "multipart/form-data"
-          (:label :for "title"
-                  "Job Name*")
-          (:input :type "text"
-                  :placeholder "Equation Sheet"
-                  :required t
-                  :name "title")
-          (:label :for "payload"
-                  "PDF File*")
-          (:input :type "file"
-                  :accept "application/pdf"
-                  :required t
-                  :name "payload")
-          (:label :for "color"
-                  "Color*")
-          (:select :name "color"
-                   :required t
-                   (:option :value "monochrome"
-                            "Black and White")
-                   (:option :value "color"
-                            "Color"))
-          (loop for options in *CUPS-OPTIONS*
-                collect
-                (let* ((option (car options))
-                       (option-selections (mapcar #'car (cdr options)))
-                       (name (string-downcase (string option))))
-                  (cl-markup:markup
-                   (:label :for name
-                           (concatenate 'string name "*"))
-                   (:select :required t
-                            :name name
-                            (loop for val in option-selections
-                                  collect
-                                  (cl-markup:markup*
-                                   `(:option :value ,val
-                                             ,val)))))))
-	        (:input :type "submit"))))
+                        (:form :method "post"
+                               :enctype "multipart/form-data"
+                               (:label :for "title"
+                                       "Job Name*")
+                               (:input :type "text"
+                                       :placeholder "Equation Sheet"
+                                       :required t
+                                       :name "title")
+                               (:label :for "payload"
+                                       "PDF File*")
+                               (:input :type "file"
+                                       :accept "application/pdf"
+                                       :required t
+                                       :name "payload")
+                               (:label :for "copies"
+                                       "Copies*")
+                               (:input :type "number"
+                                       :required t
+                                       :value "1"
+                                       :name "copies")
+                               (:label :for "color"
+                                       "Color*")
+                               (:select :name "color"
+                                        :required t
+                                        (:option :value "monochrome"
+                                                 "Black and White")
+                                        (:option :value "color"
+                                                 "Color"))
+                               (loop for options in *CUPS-OPTIONS*
+                                     collect
+                                     (let* ((option (car options))
+                                            (option-selections (mapcar #'car (cdr options)))
+                                            (name (string-downcase (string option))))
+                                       (cl-markup:markup
+                                        (:label :for name
+                                                (concatenate 'string name "*"))
+                                        (:select :required t
+                                                 :name name
+                                                 (loop for val in option-selections
+                                                       collect
+                                                       (cl-markup:markup*
+                                                        `(:option :value ,val
+                                                                  ,val)))))))
+	                             (:input :type "submit"))))
 
 ;; Signatures
 
@@ -172,15 +188,16 @@
             host
             (cdr (assoc color *COLOR-PATH* :test #'string=)))))
 
-(defun make-cups-create-printer-cmd (printer-name printer-uri)
-  (format nil "lpadmin -p \"~a\" -E -v \"~a\""
+(defun make-cups-create-printer-cmd (printer-name printer-uri &optional (ppd-file *PPD-FILE*))
+  (format nil "lpadmin -P \"~a\" -p \"~a\" -E -v \"~a\""
+          ppd-file
           printer-name
           printer-uri))
 
 (defun make-cups-delete-printer-command (printer-name)
   (format nil "lpadmin -x \"~a\"" printer-name))
 
-(defun make-cups-print-command (printer-name filename &key title options-alist)
+(defun make-cups-print-command (printer-name filename &key title options-alist (copies "1"))
   (let ((o-options (reduce
                     (lambda (options option-val)
                       (let* ((option (car option-val))
@@ -190,9 +207,10 @@
                              (format nil "~a -o ~a=~a" options option val))
                             options)))
                     options-alist :initial-value "")))
-    (format nil "lp -d \"~a\" -T \"~a\" ~a ~a"
+    (format nil "lp -d \"~a\" -t \"~a\" -n ~a ~a ~a"
             printer-name
             title
+            copies
             o-options
             filename)))
 
@@ -234,11 +252,11 @@
   (let* ((params (getf env :query-parameters))
          (anumber (cdr (assoc "anumber" params :test #'string=)))
          (message
-           (format nil
-                   (if (valid-anumber anumber)
-                       "An email will soon be sent to ~a, please follow its instructions to verify your session."
-                       "Invalid A-Number: ~a")
-                   anumber)))
+          (format nil
+                  (if (valid-anumber anumber)
+                      "An email will soon be sent to ~a, please follow its instructions to verify your session."
+                      "Invalid A-Number: ~a")
+                  anumber)))
     (if (valid-anumber anumber)
         (send-token-to-aggie anumber (sign-a-number anumber)))
     (setf (gethash :message (getf env :lack.session)) message)    
@@ -287,6 +305,7 @@
             
             (file-stream (cadr (assoc "payload" params :test #'string=)))
             (color (cdr (assoc "color" params :test #'string=)))
+            (copies (cdr (assoc "copies" params :test #'string=)))
             (title (cdr (assoc "title" params :test #'string=)))
             
             (path (make-unique-pdf))
@@ -298,6 +317,7 @@
                         printer-name
                         path
                         :title title
+                        :copies copies
                         :options-alist (mapcar
                                         (lambda (option)
                                           (cons
@@ -318,7 +338,8 @@
        
        (uiop:run-program create-printer-cmd)
        (uiop:run-program print-cmd)
-       (uiop:run-program remove-printer-cmd)
+       (setf *REMOVE-PRINTER-JOBS-NEXT-CRON* 
+             (cons remove-printer-cmd *REMOVE-PRINTER-JOBS-NEXT-CRON*))
 
        (setf (gethash :message session)
              (format nil "Print job for \"~a\" was sent!" title))
@@ -332,8 +353,8 @@
             (list (login-page env)))))
 
 (defun fallback (env)
-  (list 404 '(:content-type "text/plain")
-        (list "Not found")))
+  (list 200 '(:content-type "text/html")
+        (list (four-oh-four env))))
 
 ;; Simple routing
 
@@ -369,6 +390,14 @@
         (funcall route-handler env))))
 
 ;; And... GO!
+(cl-cron:make-cron-job
+ (lambda ()
+   (format t "Cleaning up printers...")
+   (mapcar #'uiop:run-program *REMOVE-PRINTER-JOBS-NEXT-CRON*)
+   (setf *REMOVE-PRINTER-JOBS-NEXT-CRON* '()))
+ :hour 5
+ :minute 0)
+
 (setf *app*
       (lack:builder
        `(:session
@@ -383,10 +412,10 @@
        'route-req))
 
 (defun start ()
+  (cl-cron:start-cron)
   (clack:clackup *app*
                  :port 4000
                  :address "0.0.0.0"))
 
-;; Stop
 (defun stop ()
   (clack:stop *app*))

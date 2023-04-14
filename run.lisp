@@ -3,7 +3,9 @@
 
 (usuprintcl.app:start)
 (bt:join-thread
- (find-if (lambda (th)
-            (search "hunchentoot"
-                    (bt:thread-name th)))
+ (find-if (lambda (thread)
+            (let ((name (bt:thread-name thread)))
+              (when (or (search "hunchentoot" name)
+                        (search "cl-cron" name))
+                thread)))
           (bt:all-threads)))
