@@ -11,6 +11,7 @@
 ;; Globals
 ;; I swear I have a license https://regexlicensing.org/
 (defvar *A-NUMBER-REGEX* "^(A|a)[0-9]{8}$")
+(defvar *SAFE-ARG-REGEX* "^[a-zA-Z0-9 ]*$")
 (defvar *REDIS-HOST* (uiop:getenv "REDIS_HOST"))
 (defvar *key*
   (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
@@ -45,8 +46,6 @@
                           (("One Sided" . "one-sided")
                            ("Two Sided (Portrait)" . "two-sided-long-edge")
                            ("Two Sided (Landscape)" . "two-sided-short-edge")))))
-
-(defparameter *REMOVE-PRINTER-JOBS-NEXT-CRON* '())
 
 ;; Conditions
 (define-condition invalid-anumber (error)
@@ -313,36 +312,44 @@
             (printer-uri (make-printer-uri anumber
                                            :color color))
             (create-printer-cmd (make-cups-create-printer-cmd printer-name printer-uri))
+            (options-alist (mapcar
+                            (lambda (option)
+                              (cons
+                               option
+                               (cdr (assoc (string-downcase (string option))
+                                           params :test #'string=))))
+                            (mapcar #'car *CUPS-OPTIONS*)))
             (print-cmd (make-cups-print-command
                         printer-name
                         path
                         :title title
                         :copies copies
-                        :options-alist (mapcar
-                                        (lambda (option)
-                                          (cons
-                                           option
-                                           (cdr (assoc (string-downcase (string option))
-                                                       params :test #'string=))))
-                                        (mapcar #'car *CUPS-OPTIONS*))))
+                        :options-alist options-alist))
             (remove-printer-cmd (make-cups-delete-printer-command printer-name)))
-       
-       (copy-binary-stream-to-file
-        (flexi-streams:make-flexi-stream file-stream
-                                         :external-format :utf-8)
-        path)
-       (when (and
-		          (typep file-stream 'file-stream)
-		          (probe-file file-stream))
-	       (delete-file file-stream))
-       
-       (uiop:run-program create-printer-cmd)
-       (uiop:run-program print-cmd)
-       (setf *REMOVE-PRINTER-JOBS-NEXT-CRON* 
-             (cons remove-printer-cmd *REMOVE-PRINTER-JOBS-NEXT-CRON*))
 
-       (setf (gethash :message session)
-             (format nil "Print job for \"~a\" was sent!" title))
+       (cond
+         ((some (lambda (arg)
+                  (null (cl-ppcre:all-matches *SAFE-ARG-REGEX* arg)))
+                (append (list color copies title)
+                        (mapcar #'cdr options-alist)))
+          (setf (gethash :message session)
+                (format nil "Seems like you tried something a little naughty..." title)))
+         (t
+          (copy-binary-stream-to-file
+           (flexi-streams:make-flexi-stream file-stream
+                                            :external-format :utf-8)
+           path)
+          (when (and
+		             (typep file-stream 'file-stream)
+		             (probe-file file-stream))
+	          (delete-file file-stream))
+
+          (uiop:run-program create-printer-cmd)
+          (uiop:run-program print-cmd)
+          (uiop:run-program remove-printer-cmd)
+
+          (setf (gethash :message session)
+                (format nil "Print job for \"~a\" was sent!" title))))
        
        '(302 (:location "/print"))))))
 
@@ -390,14 +397,6 @@
         (funcall route-handler env))))
 
 ;; And... GO!
-(cl-cron:make-cron-job
- (lambda ()
-   (format t "Cleaning up printers...")
-   (mapcar #'uiop:run-program *REMOVE-PRINTER-JOBS-NEXT-CRON*)
-   (setf *REMOVE-PRINTER-JOBS-NEXT-CRON* '()))
- :hour 5
- :minute 0)
-
 (setf *app*
       (lack:builder
        `(:session
@@ -412,7 +411,6 @@
        'route-req))
 
 (defun start ()
-  (cl-cron:start-cron)
   (clack:clackup *app*
                  :port 4000
                  :address "0.0.0.0"))
