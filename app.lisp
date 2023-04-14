@@ -59,6 +59,9 @@
       (:html
        (:head
         (:title "usuprintcl")
+        (:link :rel "icon"
+               :type "image/png"
+               :href "/static/favicon-32x32.png")
         (:meta :name "viewport"
                :content "width=device-width, initial-scale=1")
         (:meta :charset "UTF-8")
