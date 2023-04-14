@@ -1,9 +1,9 @@
 (defpackage usuprintcl.app
   (:use :cl)
   (:import-from :lack.middleware.session.state.cookie
-   :make-cookie-state)
+                :make-cookie-state)
   (:import-from :lack.middleware.session.store.redis
-   :make-redis-store)
+                :make-redis-store)
   (:export #:start
            #:stop))
 (in-package :usuprintcl.app)
@@ -51,16 +51,61 @@
   ())
 
 ;; Templates
-(defun job-form ()
-  (cl-markup:html5
+(defmacro render-env-with-root ((env) &body body)
+  `(let* ((session (getf ,env :lack.session))
+          (message (gethash :message session)))
+     (remhash :message session)
+     (cl-markup:html5
+      (:html
+       (:head
+        (:title "usuprintcl")
+        (:meta :name "viewport"
+               :content "width=device-width, initial-scale=1")
+        (:meta :charset "UTF-8")
+        (:link :rel "stylesheet"
+               :href "/static/pico.min.css")
+        (:link :rel "stylesheet"
+               :href "/static/style.css"))
+       (:body
+        (:main :class "container"
+               (:div :class "headings"
+                     (:h1 "usuprintcl")
+                     (:h4 "a USU printer job submission app for those of us not running shitware on our shitboxes"))
+               (:hr)
+               (:div :class "message"
+                     (if message
+                         message))
+               ,@body))))))
+
+(defun login-page (env)
+  (render-env-with-root (env)
+    (:form :method "get"
+           :action "/token"
+           (:label :for "anumber"
+                   "A-Number")
+           (:input :name "anumber"
+                   :placeholder "A01234567"
+                   :type "text")
+           (:input :type "submit"))))
+
+(defun job-form (env)
+  (render-env-with-root (env)
    (:form :method "post"
           :enctype "multipart/form-data"
+          (:label :for "title"
+                  "Print Job Name")
           (:input :type "text"
+                  :placeholder "Equation Sheet"
                   :required t
                   :name "title")
+          (:label :for "payload"
+                  "PDF To Print")
           (:input :type "file"
+                  :accept "application/pdf"
                   :required t
                   :name "payload")
+          (:label :for "color"
+                  "Print Color")
           (:select :name "color"
                    :required t
                    (:option :value "monochrome"
@@ -69,15 +114,19 @@
                             "Color"))
           (loop for options in *CUPS-OPTIONS*
                 collect
-                (let ((option (car options))
-                      (option-selections (mapcar #'car (cdr options))))
-                  (cl-markup:markup (:select :required t
-                                             :name (string-downcase (string option))
-                                             (loop for val in option-selections
-                                                   collect
-                                                   (cl-markup:markup*
-                                                    `(:option :name ,val
-                                                              ,val)))))))
+                (let* ((option (car options))
+                       (option-selections (mapcar #'car (cdr options)))
+                       (name (string-downcase (string option))))
+                  (cl-markup:markup
+                   (:label :for name
+                           name)
+                   (:select :required t
+                            :name name
+                            (loop for val in option-selections
+                                  collect
+                                  (cl-markup:markup*
+                                   `(:option :value ,val
+                                             ,val)))))))
 	        (:input :type "submit"))))
 
 ;; Signatures
@@ -153,7 +202,6 @@
                 ((("type" . "text/html")
                   ("value" . ,msg))))
      ("personalizations" . 
-
                          ((("subject" . ,subject)
                            ("to" .
                                  ((("email" . ,to))))))))))
@@ -169,10 +217,10 @@
                        token-link
                        token-link))
          (sendgrid-req-body (make-sendgrid-email
-                                   *SUBJECT-LINE*
-                                   *FROM-EMAIL*
-                                   aggiemail
-                                   body)))
+                             *SUBJECT-LINE*
+                             *FROM-EMAIL*
+                             aggiemail
+                             body)))
     (drakma:http-request *SENDGRID-SEND-PATH*
                          :method :post
                          :content sendgrid-req-body
@@ -181,14 +229,24 @@
 
 (defun request-token (env)
   (let* ((params (getf env :query-parameters))
-         (anumber (cdr (assoc "anumber" params :test #'string=))))
-    (cond
-      ((valid-anumber anumber)
-       (send-token-to-aggie anumber (sign-a-number anumber))
-       (list 200 '(:content-type "text/plain")
-             (list (format nil "An email will soon be sent to ~a, please follow its instructions to verify your session." anumber))))
-      (t
-       `(400 (:content-type "text/plain") ("Invalid anumber"))))))
+         (anumber (cdr (assoc "anumber" params :test #'string=)))
+         (message
+           (format nil
+                   (if (valid-anumber anumber)
+                       "An email will soon be sent to ~a, please follow its instructions to verify your session."
+                       "Invalid A-Number: ~a")
+                   anumber)))
+    (if (valid-anumber anumber)
+        (send-token-to-aggie anumber (sign-a-number anumber)))
+    (setf (gethash :message (getf env :lack.session)) message)    
+    '(302 (:location "/"))))
+
+(defun logout (env)
+  (let ((session (getf env :lack.session)))
+    (remhash :anumber session)
+    (setf (gethash :message session) "You have been logged out"))
+  
+  '(302 (:location "/")))
 
 (defun set-session-from-token (env)
   (let* ((params (getf env :query-parameters))
@@ -197,9 +255,9 @@
          (maybe-anumber (valid-token-p-get-anumber token)))
     (cond
       (maybe-anumber
-       (setf (gethash :anumber session) maybe-anumber)
-       (list 200 '(:content-type "text/plain")
-             (list (concatenate 'string "Thank you, " maybe-anumber))))
+       (setf (gethash :anumber session) maybe-anumber
+             (gethash :message session) (format nil "You have authenticated yourself as ~a" maybe-anumber))
+       '(302 (:location "/print")))
       (t
        '(401 (:content-type "text/plain")
          ("Invalid or expired token"))))))
@@ -218,17 +276,20 @@
   (case (getf env :request-method)
     (:get
      (list 200 '(:content-type "text/html")
-           (list (job-form))))
+           (list (job-form env))))
     (:post
      (let* ((params (getf env :body-parameters))
             (session (getf env :lack.session))
             (anumber (gethash :anumber session))
+            
             (file-stream (cadr (assoc "payload" params :test #'string=)))
             (color (cdr (assoc "color" params :test #'string=)))
             (title (cdr (assoc "title" params :test #'string=)))
+            
             (path (make-unique-pdf))
             (printer-name (make-unique-printer-name))
-            (printer-uri (make-printer-uri anumber :color color))
+            (printer-uri (make-printer-uri anumber
+                                           :color color))
             (create-printer-cmd (make-cups-create-printer-cmd printer-name printer-uri))
             (print-cmd (make-cups-print-command
                         printer-name
@@ -259,17 +320,31 @@
        (list 200 '(:content-type "text/plain")
              (list "Print job was sent"))))))
 
-(defun root (env)
-  (list 200 '(:content-type "text/plain")
-             (list "Hello!")))
+(defun home (env)
+  (if (is-authenticated env)
+      '(302 (:location "/print"))
+      (list 200 '(:content-type "text/html")
+            (list (login-page env)))))
+
+(defun fallback (env)
+  (list 404 '(:content-type "text/plain")
+        (list "Not found")))
+
+;; Simple routing
 
 (defvar *routes*
   '(("^/print" . add-print-job)
     ("^/token" . request-token)
     ("^/auth" . set-session-from-token)
-    ("^/" . root)))
+    ("^/logout" . logout)
+    ("^/$" . home)
+    ("" . fallback)))
 
-(defvar *protected-route-regexs* '("^/print"))
+(defvar *protected-route-regexs* '("^/print" "^/logout"))
+
+(defun is-authenticated (env)
+  (not (null (gethash :anumber
+                      (getf env :lack.session)))))
 
 (defun route-req (env)
   (let* ((uri (getf env :request-uri))
@@ -280,15 +355,14 @@
          (route-handler (cdr route))
          (route-protected (some (lambda (regex)
                                   (cl-ppcre:all-matches regex uri))
-                                *protected-route-regexs*))
-         (authenticated (gethash :anumber (getf env :lack.session))))
+                                *protected-route-regexs*)))
     (if route-protected
-        (if authenticated
+        (if (is-authenticated env)
             (funcall route-handler env)
             (list 401 '(:content-type "text/plain")
                   (list "Unauthorized")))
         (funcall route-handler env))))
- 
+
 ;; And... GO!
 (setf *app*
       (lack:builder
@@ -311,4 +385,3 @@
 ;; Stop
 (defun stop ()
   (clack:stop *app*))
-

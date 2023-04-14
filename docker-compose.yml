@@ -42,7 +42,7 @@ services:
     restart: always
     container_name: usuprintcl-proxy
     volumes:
-      - ./nginx/static:/usr/share/nginx/html
+      - ./nginx/static:/usr/share/nginx/static
 
 volumes:
   static:
