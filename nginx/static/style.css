@@ -14,6 +14,7 @@ body {
   padding: 1rem;
   border: 1px solid grey;
   margin-bottom: 1rem;
+  background-color: #92adad;
 }
 
 .message:empty {

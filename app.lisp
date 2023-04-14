@@ -70,7 +70,7 @@
         (:main :class "container"
                (:div :class "headings"
                      (:h1 "usuprintcl")
-                     (:h4 "a USU printer job submission app for those of us not running shitware on our shitboxes"))
+                     (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
                (:hr)
                (:div :class "message"
                      (if message
@@ -93,19 +93,19 @@
    (:form :method "post"
           :enctype "multipart/form-data"
           (:label :for "title"
-                  "Print Job Name")
+                  "Job Name*")
           (:input :type "text"
                   :placeholder "Equation Sheet"
                   :required t
                   :name "title")
           (:label :for "payload"
-                  "PDF To Print")
+                  "PDF File*")
           (:input :type "file"
                   :accept "application/pdf"
                   :required t
                   :name "payload")
           (:label :for "color"
-                  "Print Color")
+                  "Color*")
           (:select :name "color"
                    :required t
                    (:option :value "monochrome"
@@ -119,7 +119,7 @@
                        (name (string-downcase (string option))))
                   (cl-markup:markup
                    (:label :for name
-                           name)
+                           (concatenate 'string name "*"))
                    (:select :required t
                             :name name
                             (loop for val in option-selections
@@ -317,8 +317,10 @@
        (uiop:run-program print-cmd)
        (uiop:run-program remove-printer-cmd)
 
-       (list 200 '(:content-type "text/plain")
-             (list "Print job was sent"))))))
+       (setf (gethash :message session)
+             (format nil "Print job for \"~a\" was sent!" title))
+       
+       '(302 (:location "/print"))))))
 
 (defun home (env)
   (if (is-authenticated env)
