@@ -73,12 +73,16 @@
                :href "/static/style.css"))
        (:body
         (:main :class "container"
-               (:div :class "headings"
-                     (:h1 "usuprintcl")
-                     (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
+               (:div :class "header"
+                     (:div :class "headings"
+                           (:h1 "usuprintcl")
+                           (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
+                     (:div
+                      (:a :href "https://github.com/USUFSLC/usuprintcl"
+                          (:img :class "lisp-logo" :src "/static/lisp.png"))))
                (:a :href "/logout"
-                         (if authenticated
-                             "Logout"))
+                   (if authenticated
+                       "Logout"))
                (:hr)
                (:div :class "message"
                      (if message

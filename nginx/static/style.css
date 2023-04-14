@@ -20,3 +20,13 @@ body {
 .message:empty {
   display: none;
 }
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.lisp-logo {
+  max-height: 100px;
+}
