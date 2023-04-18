@@ -4,7 +4,8 @@ RUN apk add sbcl bash
 RUN apk add inotify-tools bash wget
 RUN apk add cups cups-libs cups-client cups-filters
 
-# Add user 
+COPY cupsd.conf /etc/cups/cupsd.conf
+
 RUN adduser -h /home/runner -D runner
 RUN addgroup runner lpadmin
 
