@@ -11,7 +11,7 @@
 ;; Globals
 ;; I swear I have a license https://regexlicensing.org/
 (defvar *A-NUMBER-REGEX* "^(A|a)[0-9]{8}$")
-(defvar *SAFE-ARG-REGEX* "^[a-zA-Z0-9 ]*$")
+(defvar *SAFE-ARG-REGEX* "^[a-zA-Z0-9 \-_]*$")
 (defvar *REDIS-HOST* (uiop:getenv "REDIS_HOST"))
 (defvar *key*
   (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
@@ -350,7 +350,7 @@
 
           (uiop:run-program create-printer-cmd)
           (uiop:run-program print-cmd)
-          (uiop:run-program remove-printer-cmd)
+          ;;(uiop:run-program remove-printer-cmd)
 
           (setf (gethash :message session)
                 (format nil "Print job for \"~a\" was sent!" title))))
