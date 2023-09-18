@@ -1,9 +1,9 @@
 (defpackage usuprintcl.app
   (:use :cl)
   (:import-from :lack.middleware.session.state.cookie
-                :make-cookie-state)
+    :make-cookie-state)
   (:import-from :lack.middleware.session.store.redis
-                :make-redis-store)
+    :make-redis-store)
   (:export #:start
            #:stop))
 (in-package :usuprintcl.app)
@@ -15,14 +15,11 @@
 (defvar *REDIS-HOST* (uiop:getenv "REDIS_HOST"))
 (defvar *key*
   (ironclad:ascii-string-to-byte-array (uiop:getenv "JWT_SECRET")))
-(defvar *SENDGRID-API-KEY* (uiop:getenv "SENDGRID_API_KEY"))
+(defvar *AGGIE_AUTH_API_HOST* (uiop:getenv "AGGIE_AUTH_API_HOST"))
+(defvar *AGGIE_AUTH_API_KEY* (uiop:getenv "AGGIE_AUTH_API_KEY"))
 (defvar *JWT-VALIDATE-ANUMBER-EXPIRE* (* 60 60 3)) ;; 3 hours
 (defvar *COOKIE-EXPIRE-SEC* (* 60 60 24)) ;; A day
 (defvar *PPD-FILE* "generic-postscript.ppd")
-(defvar *FROM-EMAIL* (uiop:getenv "FROM_EMAIL"))
-(defvar *PRINT-SERVER-HOST* (uiop:getenv "HOST"))
-(defvar *SUBJECT-LINE* "FSLC Print Job Authentication")
-(defvar *SENDGRID-SEND-PATH* "https://api.sendgrid.com/v3/mail/send")
 (defvar *CUPS-HOST* "vmpps4.aggies.usu.edu")
 (defvar *COLOR-PATH* '(("monochrome" . "Campus-BW")
                        ("color" . "Campus-Color")))
@@ -58,36 +55,36 @@
           (message (gethash :message session)))
      (remhash :message session)
      (cl-markup:html5
-      (:html
-       (:head
-        (:title "usuprintcl")
-        (:link :rel "icon"
-               :type "image/png"
-               :href "/static/favicon-32x32.png")
-        (:meta :name "viewport"
-               :content "width=device-width, initial-scale=1")
-        (:meta :charset "UTF-8")
-        (:link :rel "stylesheet"
-               :href "/static/pico.min.css")
-        (:link :rel "stylesheet"
-               :href "/static/style.css"))
-       (:body
-        (:main :class "container"
-               (:div :class "header"
-                     (:div :class "headings"
-                           (:h1 "usuprintcl")
-                           (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
-                     (:div
-                      (:a :href "https://github.com/USUFSLC/usuprintcl"
-                          (:img :class "lisp-logo" :src "/static/lisp.png"))))
-               (:a :href "/logout"
-                   (if authenticated
-                       "Logout"))
-               (:hr)
-               (:div :class "message"
-                     (if message
-                         message))
-               ,@body))))))
+       (:html
+         (:head
+           (:title "usuprintcl")
+           (:link :rel "icon"
+                  :type "image/png"
+                  :href "/static/favicon-32x32.png")
+           (:meta :name "viewport"
+                  :content "width=device-width, initial-scale=1")
+           (:meta :charset "UTF-8")
+           (:link :rel "stylesheet"
+                  :href "/static/pico.min.css")
+           (:link :rel "stylesheet"
+                  :href "/static/style.css"))
+         (:body
+           (:main :class "container"
+                  (:div :class "header"
+                        (:div :class "headings"
+                              (:h1 "usuprintcl")
+                              (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
+                        (:div
+                          (:a :href "https://github.com/USUFSLC/usuprintcl"
+                              (:img :class "lisp-logo" :src "/static/lisp.png"))))
+                  (:a :href "/logout"
+                      (if authenticated
+                        "Logout"))
+                  (:hr)
+                  (:div :class "message"
+                        (if message
+                          message))
+                  ,@body))))))
 
 (defun login-page (env)
   (render-env-with-root (env)
@@ -140,16 +137,16 @@
                                             (option-selections (mapcar #'car (cdr options)))
                                             (name (string-downcase (string option))))
                                        (cl-markup:markup
-                                        (:label :for name
-                                                (concatenate 'string name "*"))
-                                        (:select :required t
-                                                 :name name
-                                                 (loop for val in option-selections
-                                                       collect
-                                                       (cl-markup:markup*
-                                                        `(:option :value ,val
-                                                                  ,val)))))))
-	                             (:input :type "submit"))))
+                                         (:label :for name
+                                                 (concatenate 'string name "*"))
+                                         (:select :required t
+                                                  :name name
+                                                  (loop for val in option-selections
+                                                        collect
+                                                        (cl-markup:markup*
+                                                          `(:option :value ,val
+                                                                    ,val)))))))
+                               (:input :type "submit"))))
 
 ;; Signatures
 
@@ -161,7 +158,7 @@
       (error 'invalid-anumber)))
 
 (defun sign-a-number (anumber &optional
-                                (exp_sec *JWT-VALIDATE-ANUMBER-EXPIRE*))
+                      (exp_sec *JWT-VALIDATE-ANUMBER-EXPIRE*))
   (validate-anumber-or-throw anumber)
   (jose:encode :hs256 *key*
                `(("anumber" . ,anumber)
@@ -173,7 +170,7 @@
          (expiration (cdr (assoc "exp" decoded :test #'string=)))
          (anumber (cdr (assoc "anumber" decoded :test #'string=))))
     (if (< (get-universal-time) expiration)
-        anumber)))
+      anumber)))
 
 ;; CUPS
 
@@ -202,14 +199,14 @@
 
 (defun make-cups-print-command (printer-name filename &key title options-alist (copies "1"))
   (let ((o-options (reduce
-                    (lambda (options option-val)
-                      (let* ((option (car option-val))
-                             (val (cdr (assoc (cdr option-val) (cdr (assoc option *CUPS-OPTIONS*)) :test #'string=))))
-                        (if (> (length val) 0)
-                            (string-downcase
+                     (lambda (options option-val)
+                       (let* ((option (car option-val))
+                              (val (cdr (assoc (cdr option-val) (cdr (assoc option *CUPS-OPTIONS*)) :test #'string=))))
+                         (if (> (length val) 0)
+                           (string-downcase
                              (format nil "~a -o ~a=~a" options option val))
-                            options)))
-                    options-alist :initial-value "")))
+                           options)))
+                     options-alist :initial-value "")))
     (format nil "lp -d \"~a\" -t \"~a\" -n ~a ~a ~a"
             printer-name
             title
@@ -217,74 +214,59 @@
             o-options
             filename)))
 
-;; Sendgrid & Auth
+;; Aggie-Auth & Auth
 
-(defun make-sendgrid-email (subject from to msg)
-  (cl-json:encode-json-to-string
-   `(("from" . (("email" . ,from)))
-     ("content" .
-                ((("type" . "text/html")
-                  ("value" . ,msg))))
-     ("personalizations" . 
-                         ((("subject" . ,subject)
-                           ("to" .
-                                 ((("email" . ,to))))))))))
+(defparameter *aggie-auth-tokens* (make-hash-table :test #'equal))
 
-(defun send-token-to-aggie (anumber token)
+(defun send-token-to-aggie (anumber)
   (validate-anumber-or-throw anumber)
-  (let* ((aggiemail (format nil "~a@usu.edu" anumber))
-         (token-link (format nil "~a/auth?token=~a"
-                             *PRINT-SERVER-HOST*
-                             token))
-         (body (format nil "Hello! Looks like you (~a) have submitted a print job to the FSLC print server. Please verify your identity using the following link: <a href=\"~a\">~a</a>"
-                       anumber
-                       token-link
-                       token-link))
-         (sendgrid-req-body (make-sendgrid-email
-                             *SUBJECT-LINE*
-                             *FROM-EMAIL*
-                             aggiemail
-                             body)))
-    (drakma:http-request *SENDGRID-SEND-PATH*
-                         :method :post
-                         :content sendgrid-req-body
-                         :additional-headers `(("Content-Type" . "application/json")
-                                               ("Authorization" . ,(concatenate 'string "Bearer " *SENDGRID-API-KEY*))))))
+  (let* ((aggie-auth-resp
+           (cl-json:decode-json
+             (drakma:http-request (format nil "~a/authaggie" *AGGIE_AUTH_API_HOST*)
+                                  :want-stream t
+                                  :method :post
+                                  :parameters `(("anumber" . ,anumber))
+                                  :additional-headers `(("Authorization" . ,(format nil "Bearer ~a" *AGGIE_AUTH_API_KEY*))))))
+         (token (cdr (assoc ':token aggie-auth-resp))))
+
+    (setf (gethash token *aggie-auth-tokens*)
+          (sign-a-number anumber))))
 
 (defun request-token (env)
   (let* ((params (getf env :query-parameters))
          (anumber (cdr (assoc "anumber" params :test #'string=)))
          (message
-          (format nil
-                  (if (valid-anumber anumber)
-                      "An email will soon be sent to ~a, please follow its instructions to verify your session."
-                      "Invalid A-Number: ~a")
-                  anumber)))
+           (format nil
+                   (if (valid-anumber anumber)
+                     "An email will soon be sent to ~a, please follow its instructions to verify your session."
+                     "Invalid A-Number: ~a")
+                   anumber)))
     (if (valid-anumber anumber)
-        (send-token-to-aggie anumber (sign-a-number anumber)))
-    (setf (gethash :message (getf env :lack.session)) message)    
+      (send-token-to-aggie anumber))
+    (setf (gethash :message (getf env :lack.session)) message)
     '(302 (:location "/"))))
 
 (defun logout (env)
   (let ((session (getf env :lack.session)))
     (remhash :anumber session)
     (setf (gethash :message session) "You have been logged out"))
-  
+
   '(302 (:location "/")))
 
 (defun set-session-from-token (env)
   (let* ((params (getf env :query-parameters))
          (token (cdr (assoc "token" params :test #'string=)))
+         (signature (gethash token *aggie-auth-tokens*))
          (session (getf env :lack.session))
-         (maybe-anumber (valid-token-p-get-anumber token)))
+         (maybe-anumber (valid-token-p-get-anumber signature)))
     (cond
       (maybe-anumber
-       (setf (gethash :anumber session) maybe-anumber
-             (gethash :message session) (format nil "You have authenticated yourself as ~a" maybe-anumber))
-       '(302 (:location "/print")))
+        (setf (gethash :anumber session) maybe-anumber
+              (gethash :message session) (format nil "You have authenticated yourself as ~a" maybe-anumber))
+        '(302 (:location "/print")))
       (t
-       '(401 (:content-type "text/plain")
-         ("Invalid or expired token"))))))
+        '(401 (:content-type "text/plain")
+          ("Invalid or expired token"))))))
 
 ;; Print
 
@@ -299,69 +281,69 @@
 (defun add-print-job (env)
   (case (getf env :request-method)
     (:get
-     (list 200 '(:content-type "text/html")
-           (list (job-form env))))
+      (list 200 '(:content-type "text/html")
+            (list (job-form env))))
     (:post
-     (let* ((params (getf env :body-parameters))
-            (session (getf env :lack.session))
-            (anumber (gethash :anumber session))
-            
-            (file-stream (cadr (assoc "payload" params :test #'string=)))
-            (color (cdr (assoc "color" params :test #'string=)))
-            (copies (cdr (assoc "copies" params :test #'string=)))
-            (title (cdr (assoc "title" params :test #'string=)))
-            
-            (path (make-unique-pdf))
-            (printer-name (make-unique-printer-name))
-            (printer-uri (make-printer-uri anumber
-                                           :color color))
-            (create-printer-cmd (make-cups-create-printer-cmd printer-name printer-uri))
-            (options-alist (mapcar
-                            (lambda (option)
-                              (cons
-                               option
-                               (cdr (assoc (string-downcase (string option))
-                                           params :test #'string=))))
-                            (mapcar #'car *CUPS-OPTIONS*)))
-            (print-cmd (make-cups-print-command
-                        printer-name
-                        path
-                        :title title
-                        :copies copies
-                        :options-alist options-alist))
-            (remove-printer-cmd (make-cups-delete-printer-command printer-name)))
+      (let* ((params (getf env :body-parameters))
+             (session (getf env :lack.session))
+             (anumber (gethash :anumber session))
 
-       (cond
-         ((some (lambda (arg)
-                  (null (cl-ppcre:all-matches *SAFE-ARG-REGEX* arg)))
-                (append (list color copies title)
-                        (mapcar #'cdr options-alist)))
-          (setf (gethash :message session)
-                (format nil "Seems like you tried something a little naughty..." title)))
-         (t
-          (copy-binary-stream-to-file
-           (flexi-streams:make-flexi-stream file-stream
-                                            :external-format :utf-8)
-           path)
-          (when (and
-		             (typep file-stream 'file-stream)
-		             (probe-file file-stream))
-	          (delete-file file-stream))
+             (file-stream (cadr (assoc "payload" params :test #'string=)))
+             (color (cdr (assoc "color" params :test #'string=)))
+             (copies (cdr (assoc "copies" params :test #'string=)))
+             (title (cdr (assoc "title" params :test #'string=)))
 
-          (uiop:run-program create-printer-cmd)
-          (uiop:run-program print-cmd)
-          ;;(uiop:run-program remove-printer-cmd)
+             (path (make-unique-pdf))
+             (printer-name (make-unique-printer-name))
+             (printer-uri (make-printer-uri anumber
+                                            :color color))
+             (create-printer-cmd (make-cups-create-printer-cmd printer-name printer-uri))
+             (options-alist (mapcar
+                              (lambda (option)
+                                (cons
+                                  option
+                                  (cdr (assoc (string-downcase (string option))
+                                              params :test #'string=))))
+                              (mapcar #'car *CUPS-OPTIONS*)))
+             (print-cmd (make-cups-print-command
+                          printer-name
+                          path
+                          :title title
+                          :copies copies
+                          :options-alist options-alist))
+             (remove-printer-cmd (make-cups-delete-printer-command printer-name)))
 
-          (setf (gethash :message session)
-                (format nil "Print job for \"~a\" was sent!" title))))
-       
-       '(302 (:location "/print"))))))
+        (cond
+          ((some (lambda (arg)
+                   (null (cl-ppcre:all-matches *SAFE-ARG-REGEX* arg)))
+                 (append (list color copies title)
+                         (mapcar #'cdr options-alist)))
+            (setf (gethash :message session)
+                  (format nil "Seems like you tried something a little naughty..." title)))
+          (t
+            (copy-binary-stream-to-file
+              (flexi-streams:make-flexi-stream file-stream
+                                               :external-format :utf-8)
+              path)
+            (when (and
+                    (typep file-stream 'file-stream)
+                    (probe-file file-stream))
+              (delete-file file-stream))
+
+            (uiop:run-program create-printer-cmd)
+            (uiop:run-program print-cmd)
+            ;;(uiop:run-program remove-print-cmd)
+
+            (setf (gethash :message session)
+                  (format nil "Print job for \"~a\" was sent!" title))))
+
+        '(302 (:location "/print"))))))
 
 (defun home (env)
   (if (is-authenticated env)
-      '(302 (:location "/print"))
-      (list 200 '(:content-type "text/html")
-            (list (login-page env)))))
+    '(302 (:location "/print"))
+    (list 200 '(:content-type "text/html")
+          (list (login-page env)))))
 
 (defun fallback (env)
   (list 200 '(:content-type "text/html")
@@ -394,25 +376,25 @@
                                   (cl-ppcre:all-matches regex uri))
                                 *protected-route-regexs*)))
     (if route-protected
-        (if (is-authenticated env)
-            (funcall route-handler env)
-            (list 401 '(:content-type "text/plain")
-                  (list "Unauthorized")))
-        (funcall route-handler env))))
+      (if (is-authenticated env)
+        (funcall route-handler env)
+        (list 401 '(:content-type "text/plain")
+              (list "Unauthorized")))
+      (funcall route-handler env))))
 
 ;; And... GO!
 (setf *app*
       (lack:builder
-       `(:session
-         :store
-         ,(make-redis-store :namespace "session"
-                            :host *REDIS-HOST*)
-         :state
-         ,(make-cookie-state
-           :httponly t
-           :secure t
-           :expires *COOKIE-EXPIRE-SEC*))
-       'route-req))
+        `(:session
+           :store
+           ,(make-redis-store :namespace "session"
+                              :host *REDIS-HOST*)
+           :state
+           ,(make-cookie-state
+              :httponly t
+              :secure t
+              :expires *COOKIE-EXPIRE-SEC*))
+        'route-req))
 
 (defun start ()
   (clack:clackup *app*
