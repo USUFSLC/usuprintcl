@@ -73,7 +73,7 @@
                   (:div :class "header"
                         (:div :class "headings"
                               (:h1 "usuprintcl")
-                              (:h4 "an *unofficial* USU printer job submission app - for those of us not running shitware on our shitboxes"))
+                              (:h4 "an *unofficial* USU printer job submission app - for those of us not running crapware on our crapboxes"))
                         (:div
                           (:a :href "https://github.com/USUFSLC/usuprintcl"
                               (:img :class "lisp-logo" :src "/static/lisp.png"))))
