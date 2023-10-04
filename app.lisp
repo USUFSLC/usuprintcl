@@ -225,7 +225,7 @@
              (drakma:http-request (format nil "~a/authaggie" *AGGIE_AUTH_API_HOST*)
                                   :want-stream t
                                   :method :post
-                                  :parameters `(("anumber" . ,anumber))
+                                  :parameters `(("anumber" . ,(string-downcase anumber)))
                                   :additional-headers `(("Authorization" . ,(format nil "Bearer ~a" *AGGIE_AUTH_API_KEY*))))))
          (token (cdr (assoc ':token aggie-auth-resp))))
 
