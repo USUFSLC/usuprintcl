@@ -346,13 +346,18 @@
           (list (login-page env)))))
 
 (defun fallback (env)
-  (list 200 '(:content-type "text/html")
+  (list 404 '(:content-type "text/html")
         (list (four-oh-four env))))
+
+(defun health-check (env)
+  (list 200 '(:content-type "text/plain")
+        (list "healthy")))
 
 ;; Simple routing
 
 (defvar *routes*
-  '(("^/print" . add-print-job)
+  '(("^/health" . health-check)
+    ("^/print" . add-print-job)
     ("^/token" . request-token)
     ("^/auth" . set-session-from-token)
     ("^/logout" . logout)
