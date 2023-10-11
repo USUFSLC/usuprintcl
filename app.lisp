@@ -23,10 +23,14 @@
 (defvar *CUPS-HOST* "vmpps4.aggies.usu.edu")
 (defvar *COLOR-PATH* '(("monochrome" . "Campus-BW")
                        ("color" . "Campus-Color")))
+(defvar *CUPS-OPTIONS-DISPLAY-NAMES* '((media . "Paper Size")
+                                       (number-up . "Copies Per Page")
+                                       (orientation-requested . "Orientation")
+                                       (sides . "Sides")))
 (defvar *CUPS-OPTIONS* '((media .
-                          (("a4" . "a4")
-                           ("letter" . "letter")
-                           ("legal" . "legal")))
+                          (("legal" . "legal")
+                           ("a4" . "a4")
+                           ("letter" . "letter")))
                          (number-up .
                           (("1" . "")
                            ("2" . "2")
@@ -35,7 +39,7 @@
                            ("9" . "9")
                            ("16" . "16")))
                          (orientation-requested .
-                          (("No Orientation" . "")
+                          (("0 Deg." . "")
                            ("90 Deg. Counter Clockwise" . "4")
                            ("90 Deg. Clockwise" . "5")
                            ("180 Deg." . "6")))
@@ -135,10 +139,12 @@
                                      collect
                                      (let* ((option (car options))
                                             (option-selections (mapcar #'car (cdr options)))
-                                            (name (string-downcase (string option))))
+                                            (name (string-downcase (string option)))
+                                            (display-name (cdr
+                                                            (assoc option *CUPS-OPTIONS-DISPLAY-NAMES*))))
                                        (cl-markup:markup
                                          (:label :for name
-                                                 (concatenate 'string name "*"))
+                                                 (concatenate 'string display-name "*"))
                                          (:select :required t
                                                   :name name
                                                   (loop for val in option-selections
