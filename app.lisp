@@ -28,9 +28,10 @@
                                        (orientation-requested . "Orientation")
                                        (sides . "Sides")))
 (defvar *CUPS-OPTIONS* '((media .
-                          (("legal" . "legal")
+                          (("letter" . "letter")
                            ("a4" . "a4")
-                           ("letter" . "letter")))
+                           ("legal" . "legal")
+                           ))
                          (number-up .
                           (("1" . "")
                            ("2" . "2")
